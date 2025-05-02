@@ -1,6 +1,9 @@
+// middleware/authMiddleware.js
+
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 
+// Protect route (check if user is authenticated)
 export const protect = async (req, res, next) => {
   let token;
 
@@ -26,4 +29,14 @@ export const protect = async (req, res, next) => {
   } else {
     return res.status(401).json({ message: 'Not authorized, no token' });
   }
+};
+
+// Check if user has the required role(s)
+export const authorizeRoles = (...allowedRoles) => {
+  return (req, res, next) => {
+    if (!allowedRoles.includes(req.user.role)) {
+      return res.status(403).json({ message: 'Forbidden: Insufficient role' });
+    }
+    next();
+  };
 };
