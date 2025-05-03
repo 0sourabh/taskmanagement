@@ -7,7 +7,7 @@ import http from 'http';
 import connectDB from './config/db.js';
 import authRoutes from './routes/authRoutes.js';
 import taskRoutes from './routes/taskRoutes.js';
-
+import notificationRoutes from './routes/notificationRoutes.js';
 // Import the socket utility
 import { initSocket } from './utils/socket.js';
 
@@ -27,6 +27,7 @@ app.use(express.json());
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/tasks', taskRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 // Initialize Socket.IO
 initSocket(server);

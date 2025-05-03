@@ -1,9 +1,10 @@
 import Task from '../models/Task.js';
 import { getSocket } from '../utils/socket.js';
+import { sendNotification } from '../utils/sendNotification.js';
 
-// @desc    Create a new task
-// @route   POST /api/tasks
-// @access  Private (authenticated user)
+// @desc Create a new task
+// @route POST /api/tasks
+// @access Private
 export const createTask = async (req, res) => {
   const { title, description, dueDate, priority, assignedTo } = req.body;
 
@@ -13,9 +14,19 @@ export const createTask = async (req, res) => {
       description,
       dueDate,
       priority,
-      createdBy: req.user._id, // Set the creator as the logged-in user
+      createdBy: req.user._id,
       assignedTo,
     });
+
+    if (assignedTo && assignedTo.toString() !== req.user._id.toString()) {
+      await sendNotification({
+        userId: assignedTo,
+        type: 'task_assigned',
+        message: `You have been assigned a new task: "${title}"`,
+        taskId: task._id,
+        io: getSocket(),
+      });
+    }
 
     res.status(201).json(task);
   } catch (err) {
@@ -23,14 +34,14 @@ export const createTask = async (req, res) => {
   }
 };
 
-// @desc    Get all tasks (created by or assigned to the user)
-// @route   GET /api/tasks
-// @access  Private (authenticated user)
+// @desc Get all tasks
+// @route GET /api/tasks
+// @access Private
 export const getTasks = async (req, res) => {
   try {
     const tasks = await Task.find({
       $or: [{ createdBy: req.user._id }, { assignedTo: req.user._id }],
-    }).populate('assignedTo', 'name email'); // Populate assigned user's details
+    }).populate('assignedTo', 'name email');
 
     res.json(tasks);
   } catch (err) {
@@ -38,70 +49,107 @@ export const getTasks = async (req, res) => {
   }
 };
 
-// @desc    Update a task
-// @route   PUT /api/tasks/:id
-// @access  Private (creator or admin)
+// @desc Update a task
+// @route PUT /api/tasks/:id
+// @access Private (creator or admin)
 export const updateTask = async (req, res) => {
-    const { title, description, dueDate, priority, status, assignedTo } = req.body;
-  
-    try {
-      const task = await Task.findById(req.params.id);
-  
-      if (!task) {
-        console.log(`Task with id ${req.params.id} not found`);
-        return res.status(404).json({ message: 'Task not found' });
-      }
-  
-      // Debugging log to check if the creator or admin
-      console.log(`User ID: ${req.user._id}, Task Creator ID: ${task.createdBy}`);
-      console.log(`User Role: ${req.user.role}`);
-  
-      // Ensure that only the creator or admin can update the task
-      if (!task.createdBy.equals(req.user._id) && req.user.role !== 'admin') {
-        console.log('User is not authorized to update this task');
-        return res.status(403).json({ message: 'Not authorized to update this task' });
-      }
-  
-      task.title = title || task.title;
-      task.description = description || task.description;
-      task.dueDate = dueDate || task.dueDate;
-      task.priority = priority || task.priority;
-      task.status = status || task.status;
-      task.assignedTo = assignedTo || task.assignedTo;
-  
-      const updatedTask = await task.save();
+  const { title, description, dueDate, priority, status, assignedTo } = req.body;
 
-      // Emit a notification when a task is updated
-        const io = getSocket();
-        if (assignedTo) {
-            io.to(assignedTo.toString()).emit('taskUpdated', {
-                taskId: updatedTask._id,
-                message: `Your task "${updatedTask.title}" has been updated.`,
+  try {
+    const task = await Task.findById(req.params.id);
+
+    if (!task) return res.status(404).json({ message: 'Task not found' });
+
+    if (!task.createdBy.equals(req.user._id) && req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Not authorized to update this task' });
+    }
+
+    const prevAssignedTo = task.assignedTo?.toString();
+    const prevStatus = task.status;
+
+    task.title = title || task.title;
+    task.description = description || task.description;
+    task.dueDate = dueDate || task.dueDate;
+    task.priority = priority || task.priority;
+    task.status = status || task.status;
+    task.assignedTo = assignedTo || task.assignedTo;
+
+    const updatedTask = await task.save();
+    const io = getSocket();
+
+    // Notify if assigned user changed
+    if (assignedTo && assignedTo.toString() !== prevAssignedTo) {
+      await sendNotification({
+        userId: assignedTo,
+        type: 'task_assigned',
+        message: `You have been assigned a new task: "${updatedTask.title}"`,
+        taskId: updatedTask._id,
+        io,
       });
     }
 
-      res.json(updatedTask);
-    } catch (err) {
-      console.error('Error updating task:', err);
-      res.status(500).json({ message: 'Error updating task', error: err.message });
+    // Notify if task was updated (to current assigned user)
+    if (task.assignedTo) {
+      await sendNotification({
+        userId: task.assignedTo,
+        type: 'task_updated',
+        message: `Your task "${updatedTask.title}" has been updated.`,
+        taskId: updatedTask._id,
+        io,
+      });
     }
-  };
 
-// @desc    Delete a task
-// @route   DELETE /api/tasks/:id
-// @access  Private (creator or admin)
+    // Notify if status changed
+    if (status && status !== prevStatus && task.assignedTo) {
+      const statusMessage =
+        status === 'completed'
+          ? `Your task "${task.title}" has been marked as completed.`
+          : `Status of your task "${task.title}" changed to "${status}".`;
+
+      await sendNotification({
+        userId: task.assignedTo,
+        type: 'status_updated',
+        message: statusMessage,
+        taskId: task._id,
+        io,
+      });
+    }
+
+    res.json(updatedTask);
+  } catch (err) {
+    res.status(500).json({ message: 'Error updating task', error: err.message });
+  }
+};
+
+// @desc Delete a task
+// @route DELETE /api/tasks/:id
+// @access Private (creator or admin)
 export const deleteTask = async (req, res) => {
   try {
     const task = await Task.findById(req.params.id);
 
     if (!task) return res.status(404).json({ message: 'Task not found' });
 
-    // Ensure that only the creator or admin can delete the task
     if (!task.createdBy.equals(req.user._id) && req.user.role !== 'admin') {
       return res.status(403).json({ message: 'Not authorized to delete this task' });
     }
 
+    const assignedUser = task.assignedTo;
+    const deletedTitle = task.title;
+    const io = getSocket();
+
     await task.deleteOne();
+
+    // Notify assigned user about deletion
+    if (assignedUser) {
+      await sendNotification({
+        userId: assignedUser,
+        type: 'task_deleted',
+        message: `The task "${deletedTitle}" assigned to you has been deleted.`,
+        io,
+      });
+    }
+
     res.json({ message: 'Task deleted successfully' });
   } catch (err) {
     res.status(500).json({ message: 'Error deleting task', error: err.message });
